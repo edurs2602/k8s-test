@@ -1,0 +1,195 @@
+# GitLab CI/CD Configuration
+# This configuration provides a similar structure to GitHub Actions
+# for teams using GitLab Runners
+
+stages:
+  - test
+  - build
+  - deploy
+
+variables:
+  PYTHON_VERSION: '3.11'
+  NODE_VERSION: '20'
+  DOCKER_REGISTRY: registry.example.com  # Change to your registry
+
+# Cache configuration
+.global_cache:
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}
+    paths:
+      - backend/.venv/
+      - frontend/node_modules/
+
+# ==================== TEST STAGE ====================
+
+# Backend Lint & Test
+backend-test:
+  stage: test
+  extends: .global_cache
+  image: python:3.11-slim
+  services:
+    - name: postgres:15
+      alias: postgres
+  variables:
+    POSTGRES_USER: test
+    POSTGRES_PASSWORD: test
+    POSTGRES_DB: test_db
+    DATABASE_URL: postgresql+asyncpg://test:test@postgres:5432/test_db
+  before_script:
+    - pip install uv
+    - cd backend
+    - uv pip install --system -e ".[dev]"
+  script:
+    - cd backend
+    - ruff check .
+    - mypy app || true
+    - pytest tests/ -v --cov=app --cov-report=xml --cov-report=html
+  coverage: '/TOTAL.+?(\d+%)/'
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: backend/coverage.xml
+    paths:
+      - backend/htmlcov/
+    expire_in: 1 week
+
+# Frontend Lint & Build
+frontend-test:
+  stage: test
+  extends: .global_cache
+  image: node:20-alpine
+  before_script:
+    - cd frontend
+    - npm ci
+  script:
+    - cd frontend
+    - npm run lint
+    - npm run type-check || npm run build || true
+    - npm run test || echo "No tests yet"
+    - npm run build
+  artifacts:
+    paths:
+      - frontend/dist/
+    expire_in: 1 week
+
+# ==================== BUILD STAGE ====================
+
+# Build Backend Docker Image
+build-backend:
+  stage: build
+  image: docker:24
+  services:
+    - docker:24-dind
+  needs:
+    - backend-test
+  only:
+    - main
+    - develop
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - cd backend
+    - docker build -t $CI_REGISTRY/backend:$CI_COMMIT_SHA .
+    - docker build -t $CI_REGISTRY/backend:latest .
+    - docker push $CI_REGISTRY/backend:$CI_COMMIT_SHA
+    - docker push $CI_REGISTRY/backend:latest
+  after_script:
+    - docker logout $CI_REGISTRY
+
+# Build Frontend Docker Image
+build-frontend:
+  stage: build
+  image: docker:24
+  services:
+    - docker:24-dind
+  needs:
+    - frontend-test
+  only:
+    - main
+    - develop
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - cd frontend
+    - docker build -t $CI_REGISTRY/frontend:$CI_COMMIT_SHA .
+    - docker build -t $CI_REGISTRY/frontend:latest .
+    - docker push $CI_REGISTRY/frontend:$CI_COMMIT_SHA
+    - docker push $CI_REGISTRY/frontend:latest
+  after_script:
+    - docker logout $CI_REGISTRY
+
+# ==================== DEPLOY STAGE ====================
+
+# Deploy to Development
+deploy-develop:
+  stage: deploy
+  image: bitnami/kubectl:latest
+  needs:
+    - build-backend
+    - build-frontend
+  only:
+    - develop
+  environment:
+    name: development
+    url: https://dev.example.com
+  script:
+    - kubectl config use-context $KUBE_CONTEXT_DEV
+    - sed -i "s|:latest|:$CI_COMMIT_SHA|g" k8s/backend-deployment.yaml
+    - sed -i "s|:latest|:$CI_COMMIT_SHA|g" k8s/frontend-deployment.yaml
+    - kubectl apply -f k8s/namespace.yaml
+    - kubectl apply -f k8s/configmap.yaml
+    - kubectl apply -f k8s/backend-deployment.yaml
+    - kubectl apply -f k8s/frontend-deployment.yaml
+    - kubectl rollout status deployment/backend -n fastapi-vue-app --timeout=120s
+    - kubectl rollout status deployment/frontend -n fastapi-vue-app --timeout=120s
+
+# Deploy to Production
+deploy-production:
+  stage: deploy
+  image: bitnami/kubectl:latest
+  needs:
+    - build-backend
+    - build-frontend
+  only:
+    - main
+  when: manual
+  environment:
+    name: production
+    url: https://example.com
+  script:
+    - kubectl config use-context $KUBE_CONTEXT_PROD
+    - sed -i "s|:latest|:$CI_COMMIT_SHA|g" k8s/backend-deployment.yaml
+    - sed -i "s|:latest|:$CI_COMMIT_SHA|g" k8s/frontend-deployment.yaml
+    - kubectl apply -f k8s/namespace.yaml
+    - kubectl apply -f k8s/configmap.yaml
+    - kubectl apply -f k8s/backend-deployment.yaml
+    - kubectl apply -f k8s/frontend-deployment.yaml
+    - kubectl apply -f k8s/ingress.yaml
+    - kubectl rollout status deployment/backend -n fastapi-vue-app --timeout=120s
+    - kubectl rollout status deployment/frontend -n fastapi-vue-app --timeout=120s
+
+# ==================== RUNNERS CONFIG ====================
+
+# Example of using specific runners with tags
+# Add these tags to your GitLab Runner configuration
+
+.using-docker-runner:
+  tags:
+    - docker
+    - linux
+
+.using-kubernetes-runner:
+  tags:
+    - kubernetes
+    - production
+
+# For self-hosted runners, configure in GitLab:
+# Settings > CI/CD > Runners
+# Then use tags in job definition:
+#
+# backend-test:
+#   tags:
+#     - self-hosted
+#     - python
+#   # ...

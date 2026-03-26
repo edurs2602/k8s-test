@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: fastapi-vue-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+        - name: backend
+          image: your-registry.azurecr.io/backend:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: backend-config
+            - secretRef:
+                name: app-secrets
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: DATABASE_URL
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: fastapi-vue-app
+spec:
+  selector:
+    app: backend
+  ports:
+    - port: 8000
+      targetPort: 8000
+  type: ClusterIP

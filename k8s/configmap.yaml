@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-config
+  namespace: fastapi-vue-app
+data:
+  ENVIRONMENT: "production"
+  DEBUG: "false"
+  CORS_ORIGINS: '["https://your-domain.com"]'
+  APP_NAME: "FastAPI Backend"
+  APP_VERSION: "0.1.0"
