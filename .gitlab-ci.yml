@@ -38,7 +38,7 @@ backend-test:
   before_script:
     - pip install uv
     - cd backend
-    - uv pip install --system -e ".[dev]"
+    - uv sync --frozen --extra dev
   script:
     - cd backend
     - ruff check .
